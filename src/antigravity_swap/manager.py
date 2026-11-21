@@ -313,7 +313,7 @@ class Manager:
             return "disabled"
         if acct.quarantined:
             return f"quarantined: {acct.quarantine_reason}"
-        if acct.limited_until > now and (pool == "all" or not acct.pool_limits):
+        if acct.limited_until > now:
             return (f"held out until {_clock(acct.limited_until)}"
                     + (f" ({acct.limited_reason})" if acct.limited_reason else ""))
         if pool != "all" and acct.pool_limited(pool, now):

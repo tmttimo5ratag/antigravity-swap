@@ -36,6 +36,19 @@ class Account:
     pool_limits: dict[str, float] = field(default_factory=dict)
     pool_reasons: dict[str, str] = field(default_factory=dict)
 
+    def prune_stale_limits(self, now: float | None = None) -> bool:
+        """Prune expired pool holds. Returns True if any entries were removed."""
+        now = now or time.time()
+        changed = False
+        if self.pool_limits:
+            fresh = {p: ts for p, ts in self.pool_limits.items() if ts > now}
+            if len(fresh) != len(self.pool_limits):
+                self.pool_limits = fresh
+                if self.pool_reasons:
+                    self.pool_reasons = {p: r for p, r in self.pool_reasons.items() if p in fresh}
+                changed = True
+        return changed
+
     @property
     def label(self) -> str:
         return self.email or f"account-{self.slot}"
@@ -46,7 +59,9 @@ class Account:
         return self.limited_until > now or any(ts > now for ts in self.pool_limits.values())
 
     def pool_hold(self, pool: str, now: float | None = None) -> float:
-        return float(self.pool_limits.get(pool) or 0.0)
+        now = now or time.time()
+        ts = float(self.pool_limits.get(pool) or 0.0)
+        return ts if ts > now else 0.0
 
     def pool_limited(self, pool: str, now: float | None = None) -> bool:
         """Held out for ``pool`` only (and not for the other pool)."""
@@ -62,10 +77,10 @@ class Account:
         now = now or time.time()
         if self.disabled or self.quarantined:
             return False
+        if self.limited_until > now:
+            return False
         if pool and pool != "all":
             if self.pool_limited(pool, now):
-                return False
-            if self.limited_until > now and not self.pool_limits:
                 return False
             return True
         return not self.is_limited(now)
@@ -86,12 +101,18 @@ class Registry:
         raw = read_json(paths.accounts_file(), default={}) or {}
         accts = []
         known = set(Account.__dataclass_fields__)
+        now = time.time()
         for a in raw.get("accounts", []):
-            accts.append(Account(**{k: v for k, v in a.items() if k in known}))
+            acct = Account(**{k: v for k, v in a.items() if k in known})
+            acct.prune_stale_limits(now)
+            accts.append(acct)
         accts.sort(key=lambda a: a.slot)
         return cls(accounts=accts, mappings={k: int(v) for k, v in (raw.get("mappings") or {}).items()})
 
     def save(self) -> None:
+        now = time.time()
+        for a in self.accounts:
+            a.prune_stale_limits(now)
         write_json(
             paths.accounts_file(),
             {"schemaVersion": SCHEMA, "accounts": [asdict(a) for a in self.accounts], "mappings": self.mappings},

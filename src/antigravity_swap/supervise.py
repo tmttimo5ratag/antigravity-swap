@@ -205,7 +205,7 @@ def run_interactive(mgr: Manager, agy_args: list[str], target: str | None = None
             say(str(exc))
             nxt = _next(mgr, strategy, pool, tried, acct.slot)
             if nxt is None:
-                return _exhausted(say)
+                return _exhausted(say, mgr, pool, tried)
             acct = nxt
             continue
         if mgr.isolates:
