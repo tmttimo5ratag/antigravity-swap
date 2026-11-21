@@ -322,3 +322,131 @@ def test_user_facing_no_available_message_stays_singular_and_clear(env):
     msg = mgr.no_available_message(Registry.load(), "3p", {1})
     assert msg.startswith("no account can serve a Claude/GPT request right now")
     assert "1 a@x.io" in msg and "2 b@x.io" in msg and "already tried" in msg
+
+
+# --- Phase 5 hardened tests ---------------------------------------------------------------
+
+
+def test_expired_pool_limits_are_pruned(env):
+    add_accounts(env, "a@x.io")
+    now = time.time()
+
+    def inject_past_hold(reg):
+        a = reg.get(1)
+        a.pool_limits = {"3p": now - 3600, "gemini": now + 3600}
+        a.pool_reasons = {"3p": "old quota", "gemini": "active quota"}
+
+    with_registry(inject_past_hold)
+
+    reg = Registry.load()
+    a = reg.get(1)
+    assert "3p" not in a.pool_limits
+    assert "gemini" in a.pool_limits
+    assert "3p" not in a.pool_reasons
+    assert not a.pool_limited("3p", now)
+    assert a.pool_limited("gemini", now)
+    assert a.pool_hold("3p", now) == 0.0
+    assert a.rotatable(now, "3p") is True
+    assert a.rotatable(now, "gemini") is False
+
+
+def test_account_wide_hold_cannot_be_bypassed_by_stale_or_pool_limits(env):
+    add_accounts(env, "a@x.io")
+    now = time.time()
+
+    def inject(reg):
+        a = reg.get(1)
+        a.limited_until = now + 1800
+        a.limited_reason = "manual hold"
+        a.pool_limits = {"3p": now - 3600}
+
+    with_registry(inject)
+
+    a = Registry.load().get(1)
+    assert a.rotatable(now, "gemini") is False
+    assert a.rotatable(now, "3p") is False
+    inelig = env.manager().ineligible(a, "gemini", now)
+    assert inelig is not None and "held out until" in inelig
+
+
+def test_consume_first_with_unknown_readings(env):
+    add_accounts(env, "a@x.io", "b@x.io")
+    mgr = env.manager()
+
+    # Case 1: A has reading with 95% used (above threshold), B has unknown reading (None)
+    put_usage(1, reading(pw=95))
+    reg = Registry.load()
+    picked = mgr.pick(reg, "consume-first", "3p", threshold=90.0)
+    assert picked is not None and picked.slot == 2  # B is picked, sparing over-threshold A
+
+    # Case 2: A has reading with 50% used (below threshold), B has unknown reading (None)
+    put_usage(1, reading(pw=50))
+    picked = mgr.pick(reg, "consume-first", "3p", threshold=90.0)
+    assert picked is not None and picked.slot == 1  # Known reading with room ranks ahead of unknown reading
+
+
+def test_max_hops_boundary_behavior(env):
+    env.plan({"a@x.io": "quota3p", "b@x.io": "quota3p", "c@x.io": "quota3p"})
+    add_accounts(env, "a@x.io", "b@x.io", "c@x.io")
+
+    # max_hops=1: exactly 1 change
+    rc, out, err = run(env, ["--model", CLAUDE, "-p", "x"], strategy="rotate", max_hops=1)
+    assert rc == EXHAUSTED_EXIT
+    assert "stopped after 1 account change(s)" in err
+    assert emails(env) == ["a@x.io", "b@x.io"]
+
+    # max_hops=0: means all accounts once (total = 3, so tries all 3 accounts)
+    env.plan({"a@x.io": "quota3p", "b@x.io": "quota3p", "c@x.io": "quota3p"})
+    rc, out, err = run(env, ["--model", CLAUDE, "-p", "x"], strategy="rotate", max_hops=0)
+    assert rc == EXHAUSTED_EXIT
+    assert emails(env) == ["a@x.io", "b@x.io", "c@x.io"]
+
+    # max_hops > account count (e.g. 10): stops when accounts exhausted, bounded
+    env.plan({"a@x.io": "quota3p", "b@x.io": "quota3p", "c@x.io": "quota3p"})
+    rc, out, err = run(env, ["--model", CLAUDE, "-p", "x"], strategy="rotate", max_hops=10)
+    assert rc == EXHAUSTED_EXIT
+    assert emails(env) == ["a@x.io", "b@x.io", "c@x.io"]
+
+
+def test_generic_403_leaves_registry_file_hash_unchanged(env):
+    import hashlib
+    env.plan({"a@x.io": "forbidden", "b@x.io": "ok"})
+    add_accounts(env, "a@x.io", "b@x.io")
+    accounts_path = env.home / "accounts.json"
+    sha_before = hashlib.sha256(accounts_path.read_bytes()).hexdigest()
+
+    rc, out, err = run(env, ["--model", CLAUDE, "-p", "x"], target="1", strategy="rotate")
+    assert rc != 0
+    sha_after = hashlib.sha256(accounts_path.read_bytes()).hexdigest()
+    assert sha_before == sha_after
+    assert "NOT swapped or quarantined" in err
+
+
+def test_gemini_quota_error_never_holds_3p(env):
+    env.plan({"a@x.io": "quota", "b@x.io": "ok"})
+    add_accounts(env, "a@x.io", "b@x.io")
+    rc, out, err = run(env, ["--model", GEMINI, "-p", "x"], target="1", strategy="rotate")
+    assert rc == 0, err
+    assert "done by b@x.io" in out
+    a = Registry.load().get(1)
+    assert a.pool_limited("gemini")
+    assert not a.pool_limited("3p")
+    assert a.rotatable(time.time(), "3p") is True
+    # A fresh Claude request runs directly on account A without failover
+    env.plan({"a@x.io": "ok", "b@x.io": "ok"})
+    rc, out, err = run(env, ["--model", CLAUDE, "-p", "x"], target="1", strategy="rotate")
+    assert rc == 0, err
+    assert "done by a@x.io" in out
+    assert emails(env)[-1] == "a@x.io"
+
+
+def test_refusal_text_lists_every_account_with_reason(env):
+    env.plan({"a@x.io": "quota3p", "b@x.io": "quota3p"})
+    add_accounts(env, "a@x.io", "b@x.io")
+    rc, out, err = run(env, ["--model", CLAUDE, "-p", "x"], strategy="rotate")
+    assert rc == EXHAUSTED_EXIT
+    assert "every eligible account is out of Claude/GPT quota" in err
+    assert "1 a@x.io: Claude/GPT quota exhausted" in err
+    assert "2 b@x.io: Claude/GPT quota exhausted" in err
+    assert "already tried in this run" in err
+
