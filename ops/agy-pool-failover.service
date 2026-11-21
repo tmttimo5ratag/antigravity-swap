@@ -1,0 +1,25 @@
+[Unit]
+Description=Antigravity Pooling V1.2 Autoswitch & Quota Supervisor (SKETCH ONLY)
+Documentation=https://github.com/hrmasss/antigravity-swap
+# ==============================================================================
+# HUMAN GATE NOTICE:
+# DO NOT ENABLE OR START THIS UNIT AUTOMATICALLY.
+# Enabling systemd units or background supervisory daemons requires explicit
+# human authority. Review environment variables and storage paths before enabling.
+# ==============================================================================
+
+[Service]
+Type=simple
+WorkingDirectory=/home/timo/work/antigravity-pooling/antigravity-swap
+Environment="ASWAP_HOME=/home/timo/agy-pool"
+Environment="ASWAP_BACKEND=file"
+Environment="AGY_POOL_REPO=/home/timo/work/antigravity-pooling/antigravity-swap"
+Environment="ASWAP_GEMINI_DIR=/home/timo/snap/antigravity-cli/common/.gemini"
+Environment="PYTHONPATH=/home/timo/work/antigravity-pooling/antigravity-swap/src"
+ExecStart=/home/timo/antigravity-pooling-audit/venv/bin/python -m antigravity_swap.cli auto --interval 60 --threshold 90 --pool 3p
+Restart=on-failure
+RestartSec=10
+LimitNOFILE=65536
+
+[Install]
+WantedBy=default.target
