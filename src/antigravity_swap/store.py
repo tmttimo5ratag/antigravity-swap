@@ -38,14 +38,17 @@ class Account:
 
     def prune_stale_limits(self, now: float | None = None) -> bool:
         """Prune expired pool holds. Returns True if any entries were removed."""
-        now = now or time.time()
+        now = time.time() if now is None else now
         changed = False
         if self.pool_limits:
             fresh = {p: ts for p, ts in self.pool_limits.items() if ts > now}
             if len(fresh) != len(self.pool_limits):
                 self.pool_limits = fresh
-                if self.pool_reasons:
-                    self.pool_reasons = {p: r for p, r in self.pool_reasons.items() if p in fresh}
+                changed = True
+        if self.pool_reasons:
+            fresh_reasons = {p: r for p, r in self.pool_reasons.items() if p in self.pool_limits}
+            if len(fresh_reasons) != len(self.pool_reasons):
+                self.pool_reasons = fresh_reasons
                 changed = True
         return changed
 
@@ -55,17 +58,17 @@ class Account:
 
     def is_limited(self, now: float | None = None) -> bool:
         """Held out for every pool (set by hand, or a quota error whose model was unknown)."""
-        now = now or time.time()
+        now = time.time() if now is None else now
         return self.limited_until > now or any(ts > now for ts in self.pool_limits.values())
 
     def pool_hold(self, pool: str, now: float | None = None) -> float:
-        now = now or time.time()
+        now = time.time() if now is None else now
         ts = float(self.pool_limits.get(pool) or 0.0)
         return ts if ts > now else 0.0
 
     def pool_limited(self, pool: str, now: float | None = None) -> bool:
         """Held out for ``pool`` only (and not for the other pool)."""
-        now = now or time.time()
+        now = time.time() if now is None else now
         return self.pool_hold(pool, now) > now
 
     def rotatable(self, now: float | None = None, pool: str | None = None) -> bool:
@@ -74,7 +77,7 @@ class Account:
         ``pool`` narrows it to *that* quota pool: an account held for Claude/GPT is still
         rotatable for Gemini work, and the other way round.
         """
-        now = now or time.time()
+        now = time.time() if now is None else now
         if self.disabled or self.quarantined:
             return False
         if self.limited_until > now:

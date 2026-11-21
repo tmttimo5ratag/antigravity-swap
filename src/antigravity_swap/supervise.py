@@ -290,9 +290,11 @@ def run_interactive(mgr: Manager, agy_args: list[str], target: str | None = None
         if held is None:
             until_txt = "?"
         elif p["pool_known"] and pool != "all":
-            until_txt = time.strftime("%H:%M", time.localtime(held.pool_hold(pool)))
+            ts = held.pool_hold(pool)
+            until_txt = time.strftime("%H:%M", time.localtime(ts)) if ts > 0 else "?"
         else:
-            until_txt = time.strftime("%H:%M", time.localtime(held.limited_until))
+            ts = held.limited_until
+            until_txt = time.strftime("%H:%M", time.localtime(ts)) if ts > 0 else "?"
         say(f"account {acct.slot} ({acct.label}): {where} quota exhausted; held out until {until_txt}")
         say(f"continuing {'conversation ' + conv if conv else 'in a new session'} on account "
             f"{nxt.slot} ({nxt.label})")

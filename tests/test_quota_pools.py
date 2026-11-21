@@ -450,3 +450,68 @@ def test_refusal_text_lists_every_account_with_reason(env):
     assert "2 b@x.io: Claude/GPT quota exhausted" in err
     assert "already tried in this run" in err
 
+
+def test_auto_decide_preserves_gemini_on_claude_held_account(env):
+    from antigravity_swap.auto import Outcome, Policy, decide
+    mgr, reg = add_accounts(env, "a@x.io", "b@x.io")
+    now = time.time()
+    # A has Claude quota exhausted (held for 3p), but Gemini has plenty of room (10% used)
+    hold(1, pools={"3p": now + 3600})
+    put_usage(1, reading(gw=10))
+    put_usage(2, reading(gw=20))
+    a = Registry.load().get(1)
+    policy = Policy(pool="gemini", threshold=90.0)
+    target, reason, outcome, used = decide(mgr, Registry.load(), a, policy, last_switch=0.0, now=now)
+    assert target is None
+    assert outcome == Outcome.NOTHING
+    assert used == 10.0
+    assert "under 90%" in reason
+
+
+def test_auto_blocked_wake_at_includes_pool_limits(env):
+    from antigravity_swap.auto import Outcome, Policy, decide
+    mgr, reg = add_accounts(env, "a@x.io", "b@x.io")
+    now = time.time()
+    # Both accounts held for Gemini quota
+    hold(1, pools={"gemini": now + 1800})
+    hold(2, pools={"gemini": now + 3600})
+    reg = Registry.load()
+    policy = Policy(pool="gemini", threshold=90.0)
+    target, reason, outcome, used = decide(mgr, reg, reg.get(1), policy, last_switch=0.0, now=now)
+    assert target is None
+    assert outcome == Outcome.BLOCKED
+    assert used == 100.0
+
+
+def test_ineligible_for_all_pool_reports_pool_limits(env):
+    mgr, reg = add_accounts(env, "a@x.io")
+    now = time.time()
+    hold(1, pools={"3p": now + 3600})
+    a = Registry.load().get(1)
+    # rotatable(now, "all") is False because 3p is held
+    assert a.rotatable(now, "all") is False
+    # ineligible(a, "all", now) must clearly state that Claude/GPT quota is exhausted
+    inelig = mgr.ineligible(a, "all", now)
+    assert inelig is not None
+    assert "Claude/GPT quota exhausted" in inelig
+    msg = mgr.no_available_message(Registry.load(), "all")
+    assert "eligible" not in msg
+    assert "Claude/GPT quota exhausted" in msg
+
+
+def test_prune_stale_limits_cleans_orphaned_pool_reasons(env):
+    add_accounts(env, "a@x.io")
+    now = time.time()
+
+    def inject_orphan(reg):
+        a = reg.get(1)
+        a.pool_limits = {}
+        a.pool_reasons = {"3p": "orphan quota reason"}
+
+    with_registry(inject_orphan)
+    reg = Registry.load()
+    a = reg.get(1)
+    assert a.pool_limits == {}
+    assert a.pool_reasons == {}
+
+

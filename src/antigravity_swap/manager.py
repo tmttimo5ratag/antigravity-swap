@@ -319,6 +319,12 @@ class Manager:
         if pool != "all" and acct.pool_limited(pool, now):
             return (f"{pool_label(pool)} quota exhausted until {_clock(acct.pool_hold(pool, now))}"
                     + (f" ({acct.pool_reasons.get(pool)})" if acct.pool_reasons.get(pool) else ""))
+        if pool == "all":
+            held_pools = [p for p in ("3p", "gemini") if acct.pool_limited(p, now)]
+            if held_pools:
+                p = held_pools[0]
+                return (f"{pool_label(p)} quota exhausted until {_clock(acct.pool_hold(p, now))}"
+                        + (f" ({acct.pool_reasons.get(p)})" if acct.pool_reasons.get(p) else ""))
         used = self.used(acct, pool)
         if used is not None and used >= EXHAUSTED:
             return f"{pool_label(pool)} at {used:.0f}% used"

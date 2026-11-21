@@ -75,13 +75,16 @@ def _ev(kind: str, **kw) -> dict:
 
 def decide(mgr: Manager, reg: Registry, active, policy: Policy, last_switch: float, now: float):
     """Pure decision step: returns (target or None, reason, outcome_if_no_switch)."""
-    if active.is_limited(now) or active.pool_limited(policy.pool, now):
+    pool = policy.pool
+    held = (active.disabled or active.quarantined or active.limited_until > now
+            or (active.pool_limited(pool, now) if pool != "all" else active.is_limited(now)))
+    if held:
         used = 100.0
     else:
-        used = binding_used(mgr.cached(active).get("reading"), policy.pool)
+        used = binding_used(mgr.cached(active).get("reading"), pool)
     if used is None:
         return None, "active account usage unknown; holding", Outcome.NOTHING, used
-    exhausted = used >= EXHAUSTED or active.is_limited(now) or active.pool_limited(policy.pool, now)
+    exhausted = used >= EXHAUSTED or held
     candidates = []
     for a in reg.ordered():
         if a.slot == active.slot or not a.rotatable(now, policy.pool):
@@ -145,7 +148,12 @@ def tick(mgr: Manager, policy: Policy) -> Tick:
             kind = "all-exhausted" if outcome == Outcome.BLOCKED else "no-switch"
             t = Tick(outcome, events + [_ev(kind, reason=reason)])
             if outcome == Outcome.BLOCKED:
-                resets = [x for x in (a.limited_until for a in reg.accounts) if x > now]
+                resets = [x for a in reg.accounts for x in (
+                    [a.limited_until] + (
+                        [a.pool_hold(policy.pool, now)] if policy.pool != "all"
+                        else list(a.pool_limits.values())
+                    )
+                ) if x > now]
                 t.wake_at = min(resets) if resets else None
             return t
         if policy.dry_run:
